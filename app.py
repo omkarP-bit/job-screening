@@ -430,14 +430,114 @@ class MatchingEngine:
         return match_details
 
 
+class NotificationSystem:
+    """Handles automated communications with candidates"""
+
+    def __init__(self, smtp_server, smtp_port, sender_email, sender_password):
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.sender_email = sender_email
+        self.sender_password = sender_password
+
+        # Email templates
+        self.templates = {
+            "shortlisted": """
+            Subject: You've Been Shortlisted for {job_title}
+
+            Dear {candidate_name},
+
+            We're pleased to inform you that your application for the {job_title} position
+            has been shortlisted. Our AI-powered screening system identified a strong match
+            between your qualifications and our requirements.
+
+            Your overall match score: {match_score}%
+
+            Our HR team will contact you shortly to schedule an interview.
+
+            Best regards,
+            {company_name} Recruitment Team
+            """,
+
+            "rejected": """
+            Subject: Update on Your Application for {job_title}
+
+            Dear {candidate_name},
+
+            Thank you for your interest in the {job_title} position at {company_name}.
+
+            After careful review of your application, we've decided to proceed with other
+            candidates whose qualifications more closely match our current requirements.
+
+            We encourage you to apply for future openings that align with your skills.
+
+            Best regards,
+            {company_name} Recruitment Team
+            """
+        }
+
+    def send_email(self, recipient_email, template_name, params):
+        template = self.templates.get(template_name)
+        if not template:
+            raise ValueError(f"Template '{template_name}' not found")
+
+        lines = template.strip().split('\n')
+        subject_line = lines[1].replace('Subject: ', '').strip().format(**params)
+        body = '\n'.join(lines[3:]).format(**params)
+
+        message = MIMEMultipart()
+        message["From"] = self.sender_email
+        message["To"] = recipient_email
+        message["Subject"] = subject_line
+        message.attach(MIMEText(body, "plain"))
+        try:
+            with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
+                server.starttls()
+                server.login(self.sender_email, self.sender_password)
+                server.send_message(message)
+            print(f"Email successfully handed off to SMTP server for: {recipient_email}, Subject: {subject_line}")
+            return True
+        except smtplib.SMTPException as e:
+            print(f"SMTP error sending email to {recipient_email}: {str(e)}")
+            return False
+        except Exception as e: # Catch any other unexpected errors during sending
+            print(f"Unexpected error sending email to {recipient_email}: {str(e)}")
+            return False
+
+    def notify_candidate(self, candidate_info, job_info, match_details, threshold=0.8):
+        match_score = match_details["overall_score"] * 100
+        recipient_email = candidate_info["contact_info"]["email"]
+        candidate_name = candidate_info["contact_info"]["name"] or "Candidate"
+
+        params = {
+            "candidate_name": candidate_name,
+            "job_title": job_info.get("title", "the position"),
+            "company_name": job_info.get("company", "our company"),
+            "match_score": round(match_score, 1)
+        }
+
+        template_name = "shortlisted" if match_score >= (threshold * 100) else "rejected"
+        return self.send_email(recipient_email, template_name, params)
+
+
 class JobScreeningSystem:
     """Main system class that coordinates the job screening process"""
-    
+
     def __init__(self, smtp_config=None):
         self.jd_parser = JobDescriptionParser()
         self.resume_parser = ResumeParser()
         self.matching_engine = MatchingEngine()
-        
+
+        if smtp_config and all(smtp_config.values()): # Ensure all SMTP config values are present
+            try:
+                self.notification_system = NotificationSystem(**smtp_config)
+                print("NotificationSystem initialized.")
+            except Exception as e:
+                print(f"Failed to initialize NotificationSystem: {e}")
+                self.notification_system = None
+        else:
+            self.notification_system = None
+            print("NotificationSystem not configured due to missing SMTP details.")
+
         self.job_requirements = None
         self.candidates = []
         self.match_results = []
@@ -446,13 +546,13 @@ class JobScreeningSystem:
         """Load and parse job description"""
         text = self.jd_parser.extract_text(file_path)
         self.job_requirements = self.jd_parser.extract_requirements(text)
-        
+
         filename = os.path.basename(file_path)
         job_title = os.path.splitext(filename)[0]
         self.job_requirements["title"] = job_title
-        
+
         return self.job_requirements
-    
+
     def load_resumes(self, directory_path):
         """Load and parse all resumes in directory"""
         self.candidates = []
@@ -460,7 +560,7 @@ class JobScreeningSystem:
         if not os.path.exists(directory_path):
             print(f"Directory {directory_path} does not exist")
             return []
-        
+
         for filename in os.listdir(directory_path):
             if filename.endswith(('.pdf', '.docx', '.txt')):
                 file_path = os.path.join(directory_path, filename)
@@ -471,26 +571,26 @@ class JobScreeningSystem:
                     print(f"Successfully parsed: {filename}")
                 except Exception as e:
                     print(f"Error parsing resume {filename}: {e}")
-        
+
         return self.candidates
-    
+
     def screen_candidates(self, threshold=0.8, weights=None):
         """Screen all candidates against job requirements"""
         if not self.job_requirements:
             raise ValueError("Job requirements not loaded")
-        
+
         if not self.candidates:
             raise ValueError("No candidates loaded")
-        
+
         self.match_results = []
-        
+
         for candidate in self.candidates:
             match_details = self.matching_engine.match_resume_to_jd(
                 self.job_requirements,
                 candidate,
                 weights
             )
-            
+
             result = {
                 "candidate": candidate["contact_info"]["name"] or "Unknown",
                 "email": candidate["contact_info"]["email"],
@@ -499,12 +599,56 @@ class JobScreeningSystem:
                 "shortlisted": match_details["overall_score"] >= threshold,
                 "details": match_details
             }
-            
+
             self.match_results.append(result)
-        
+
         self.match_results.sort(key=lambda x: x["match_score"], reverse=True)
-        
+
         return self.match_results
+
+    def send_notifications(self, company_name=None, threshold=0.8):
+        """Send notifications to all candidates"""
+        if not self.notification_system:
+            raise ValueError("Notification system not configured. Please check SMTP settings.")
+
+        if not self.match_results:
+            raise ValueError("No screening results available to send notifications.")
+
+        job_info = {
+            "title": self.job_requirements.get("title", "the relevant position"),
+            "company": company_name or "Our Company"
+        }
+
+        notification_log = []
+        for result in self.match_results:
+            candidate_data = next((c for c in self.candidates if c.get("file_name") == result.get("file_name")), None)
+            if not candidate_data or not candidate_data.get("contact_info", {}).get("email"):
+                notification_log.append({
+                    "candidate": result.get("candidate", "Unknown"), "email": "N/A",
+                    "status": "Skipped (no email)", "shortlisted": bool(result.get("shortlisted", False))
+                })
+                continue
+            try:
+                # notify_candidate now returns True on success, False on failure during SMTP operations
+                success = self.notification_system.notify_candidate(candidate_data, job_info, result["details"], threshold)
+                if success:
+                    notification_log.append({
+                        "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
+                        "status": "Sent", "shortlisted": bool(result.get("shortlisted", False))
+                    })
+                else:
+                    notification_log.append({
+                        "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
+                        "status": "Failed (SMTP issue, check server logs for details)", # More specific status
+                        "shortlisted": bool(result.get("shortlisted", False))
+                    })
+            except Exception as e:
+                notification_log.append({
+                    "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
+                    "status": f"Failed: {str(e)}", "shortlisted": bool(result.get("shortlisted", False))
+                })
+        print(f"Notification log: {notification_log}") # Added print for easier debugging of the log
+        return notification_log
 
 
 # Flask Application
@@ -525,7 +669,16 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Global screening system instance
-screening_system = JobScreeningSystem()
+# Placeholder SMTP configuration - REPLACE with your actual details or load from environment/config
+# Ensure your SMTP server allows less secure app access or use an app password if using Gmail
+SMTP_CONFIG = {
+    "smtp_server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"), # e.g., "smtp.gmail.com"
+    "smtp_port": int(os.environ.get("SMTP_PORT", 587)), # e.g., 587 for TLS
+    "sender_email": os.environ.get("SENDER_EMAIL", "omkarproject7@gmail.com"), # e.g., "your.email@gmail.com"
+    "sender_password": os.environ.get("SENDER_PASSWORD", "tjxraiwtfugurliu") # e.g., "your_app_password"
+}
+
+screening_system = JobScreeningSystem(smtp_config=SMTP_CONFIG)
 
 @app.route('/')
 def index():
@@ -626,17 +779,38 @@ def screen_candidates():
         # Perform screening
         results = screening_system.screen_candidates(threshold, weights)
         
+        # Convert results to JSON-serializable format
+        serializable_results = []
+        for result in results:
+            serializable_result = {
+                'candidate': str(result.get('candidate', 'Unknown')),
+                'email': str(result.get('email', '')),
+                'file_name': str(result.get('file_name', '')),
+                'match_score': float(result.get('match_score', 0.0)),
+                'shortlisted': bool(result.get('shortlisted', False)),
+                'details': {
+                    'overall_score': float(result['details'].get('overall_score', 0.0)),
+                    'skill_score': float(result['details'].get('skill_score', 0.0)),
+                    'experience_score': float(result['details'].get('experience_score', 0.0)),
+                    'education_score': float(result['details'].get('education_score', 0.0)),
+                    'matched_skills': [str(skill) for skill in result['details'].get('matched_skills', [])]
+                }
+            }
+            serializable_results.append(serializable_result)
+        
         response = {
             'message': 'Screening completed successfully',
-            'total_candidates': len(results),
-            'shortlisted_candidates': len([r for r in results if r.get('shortlisted', False)]),
-            'threshold': threshold,
-            'results': results
+            'total_candidates': int(len(serializable_results)),
+            'shortlisted_candidates': int(len([r for r in serializable_results if r.get('shortlisted', False)])),
+            'threshold': float(threshold),
+            'results': serializable_results
         }
         
         return jsonify(response)
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()  # This will help debug the exact error
         return jsonify({'error': f'Error during screening: {str(e)}'}), 500
 
 @app.route('/get_results')
@@ -645,13 +819,34 @@ def get_results():
         if not screening_system.match_results:
             return jsonify({'error': 'No screening results available'}), 400
         
+        # Convert results to JSON-serializable format
+        serializable_results = []
+        for result in screening_system.match_results:
+            serializable_result = {
+                'candidate': str(result.get('candidate', 'Unknown')),
+                'email': str(result.get('email', '')),
+                'file_name': str(result.get('file_name', '')),
+                'match_score': float(result.get('match_score', 0.0)),
+                'shortlisted': bool(result.get('shortlisted', False)),
+                'details': {
+                    'overall_score': float(result['details'].get('overall_score', 0.0)),
+                    'skill_score': float(result['details'].get('skill_score', 0.0)),
+                    'experience_score': float(result['details'].get('experience_score', 0.0)),
+                    'education_score': float(result['details'].get('education_score', 0.0)),
+                    'matched_skills': [str(skill) for skill in result['details'].get('matched_skills', [])]
+                }
+            }
+            serializable_results.append(serializable_result)
+        
         return jsonify({
-            'results': screening_system.match_results,
-            'total_candidates': len(screening_system.match_results),
-            'shortlisted_candidates': len([r for r in screening_system.match_results if r.get('shortlisted', False)])
+            'results': serializable_results,
+            'total_candidates': int(len(serializable_results)),
+            'shortlisted_candidates': int(len([r for r in serializable_results if r.get('shortlisted', False)]))
         })
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f'Error retrieving results: {str(e)}'}), 500
 
 @app.route('/send_notifications', methods=['POST'])
@@ -659,25 +854,24 @@ def send_notifications():
     try:
         data = request.get_json() or {}
         company_name = data.get('company_name', 'Our Company')
-        
+        threshold = float(data.get('threshold', 0.8)) # Get threshold from request or use default
+
+        if not screening_system.notification_system:
+            return jsonify({'error': 'Notification system not configured. Cannot send emails.'}), 400
+
         if not screening_system.match_results:
             return jsonify({'error': 'No screening results available'}), 400
-        
-        notification_results = []
-        for result in screening_system.match_results:
-            notification_results.append({
-                'candidate': result.get('candidate', 'Unknown'),
-                'email': result.get('email', 'N/A'),
-                'notification_sent': True,  # Simulated
-                'shortlisted': result.get('shortlisted', False)
-            })
-        
+
+        # Call the actual send_notifications method
+        # The method now returns a log of notification attempts
+        notification_log = screening_system.send_notifications(company_name=company_name, threshold=threshold)
+
         return jsonify({
-            'message': 'Notifications sent successfully',
-            'notification_results': notification_results
+            'message': 'Notification process completed. Check log for details.',
+            'notification_log': notification_log
         })
-    
     except Exception as e:
+        traceback.print_exc()
         return jsonify({'error': f'Error sending notifications: {str(e)}'}), 500
 
 @app.route('/download_results')
@@ -686,15 +880,35 @@ def download_results():
         if not screening_system.match_results:
             return jsonify({'error': 'No results available to download'}), 400
         
+        # Convert results to JSON-serializable format
+        serializable_results = []
+        for result in screening_system.match_results:
+            serializable_result = {
+                'candidate': str(result.get('candidate', 'Unknown')),
+                'email': str(result.get('email', '')),
+                'file_name': str(result.get('file_name', '')),
+                'match_score': float(result.get('match_score', 0.0)),
+                'shortlisted': bool(result.get('shortlisted', False)),
+                'details': {
+                    'overall_score': float(result['details'].get('overall_score', 0.0)),
+                    'skill_score': float(result['details'].get('skill_score', 0.0)),
+                    'experience_score': float(result['details'].get('experience_score', 0.0)),
+                    'education_score': float(result['details'].get('education_score', 0.0)),
+                    'matched_skills': [str(skill) for skill in result['details'].get('matched_skills', [])]
+                }
+            }
+            serializable_results.append(serializable_result)
+        
         results_dir = app.config['UPLOAD_FOLDER']
         results_filename = 'screening_results.json'
         results_file_path = os.path.join(results_dir, results_filename)
         
         with open(results_file_path, 'w', encoding='utf-8') as f:
-            json.dump(screening_system.match_results, f, indent=2, ensure_ascii=False)
+            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
         
         return send_from_directory(directory=results_dir, path=results_filename, as_attachment=True, download_name='screening_results.json')
     except Exception as e:
+        import traceback
         traceback.print_exc()
         return jsonify({'error': f'Error saving results: {str(e)}'}), 500
 
@@ -702,8 +916,10 @@ def download_results():
 def reset_system():
     try:
         global screening_system
-        screening_system = JobScreeningSystem()
-        
+        # Re-initialize with SMTP_CONFIG
+        screening_system = JobScreeningSystem(smtp_config=SMTP_CONFIG)
+
+
         for folder in ['job_descriptions', 'resumes']:
             folder_path = os.path.join(app.config['UPLOAD_FOLDER'], folder)
             for file in os.listdir(folder_path):

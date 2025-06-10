@@ -1,0 +1,46 @@
+[
+  {
+    "candidate": "Sarah Johnson",
+    "email": "sarah.johnson@email.com",
+    "file_name": "20250610_203709_resume.pdf",
+    "match_score": 0.19992466725890443,
+    "shortlisted": false,
+    "details": {
+      "overall_score": 0.19992466725890443,
+      "skill_score": 0.14795918367346939,
+      "experience_score": 0.3103213963930335,
+      "education_score": 0.16424328252129847,
+      "matched_skills": [
+        "in",
+        "python",
+        "language",
+        "or",
+        "machine",
+        "learning",
+        "ai",
+        "sql",
+        "git",
+        "javascript",
+        "python",
+        "machine",
+        "learning",
+        "on",
+        "processing",
+        "in",
+        "or",
+        "machine",
+        "learning",
+        "processing",
+        "in",
+        "to",
+        "docker",
+        "natural",
+        "language",
+        "processing",
+        "react",
+        "or",
+        "angular"
+      ]
+    }
+  }
+]
