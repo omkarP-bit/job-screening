@@ -8,7 +8,6 @@ from datetime import datetime
 # Import the complete JobScreeningSystem and related classes
 import re
 import numpy as np
-import pandas as pd
 import spacy
 import PyPDF2
 import docx
@@ -683,10 +682,10 @@ def allowed_file(filename):
 # Placeholder SMTP configuration - REPLACE with your actual details or load from environment/config
 # Ensure your SMTP server allows less secure app access or use an app password if using Gmail
 SMTP_CONFIG = {
-    "smtp_server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"), # e.g., "smtp.gmail.com"
-    "smtp_port": int(os.environ.get("SMTP_PORT", 587)), # e.g., 587 for TLS
-    "sender_email": os.environ.get("SENDER_EMAIL", "omkarproject7@gmail.com"), # e.g., "your.email@gmail.com"
-    "sender_password": os.environ.get("SENDER_PASSWORD", "tjxraiwtfugurliu") # e.g., "your_app_password"
+    "smtp_server": os.environ.get("SMTP_SERVER"),
+    "smtp_port": int(os.environ.get("SMTP_PORT", "0")), # Default to "0" to make int() safe and ensure all() check works
+    "sender_email": os.environ.get("SENDER_EMAIL"),
+    "sender_password": os.environ.get("SENDER_PASSWORD")
 }
 
 screening_system = JobScreeningSystem(smtp_config=SMTP_CONFIG)
