@@ -661,14 +661,17 @@ class JobScreeningSystem:
 
 # Flask Application
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'your-secret-key-here'
-app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['SECRET_KEY'] = os.environ.get('FLASK_SECRET_KEY', 'your-default-secret-key-for-local-dev') # Load from env var
+# Use /tmp for uploads on Vercel (ephemeral storage)
+VERCEL_TMP_FOLDER = '/tmp'
+app.config['UPLOAD_FOLDER'] = os.path.join(VERCEL_TMP_FOLDER, 'uploads_ai_job_screening')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 
 # Create upload directories
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'job_descriptions'), exist_ok=True)
-os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'resumes'), exist_ok=True)
+# These will be created on-demand within routes for serverless environments
+# os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True) # Not here
+# os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'job_descriptions'), exist_ok=True) # Not here
+# os.makedirs(os.path.join(app.config['UPLOAD_FOLDER'], 'resumes'), exist_ok=True) # Not here
 
 # Allowed file extensions
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'docx'}
@@ -707,7 +710,9 @@ def upload_job_description():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"{timestamp}_{filename}"
             
-            file_path = os.path.join(app.config['UPLOAD_FOLDER'], 'job_descriptions', filename)
+            jd_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'job_descriptions')
+            os.makedirs(jd_dir, exist_ok=True) # Create on demand
+            file_path = os.path.join(jd_dir, filename)
             file.save(file_path)
             
             # Parse job description using the complete system
@@ -736,11 +741,18 @@ def upload_resumes():
         
         uploaded_files = []
         resume_dir = os.path.join(app.config['UPLOAD_FOLDER'], 'resumes')
-        
-        # Clear previous resumes
-        for old_file in os.listdir(resume_dir):
-            os.remove(os.path.join(resume_dir, old_file))
-        
+        os.makedirs(resume_dir, exist_ok=True) # Create on demand
+
+        # Clear previous resumes from /tmp (optional, depends on desired behavior for ephemeral storage)
+        if os.path.exists(resume_dir):
+            for old_file in os.listdir(resume_dir):
+                try:
+                    os.remove(os.path.join(resume_dir, old_file))
+                except OSError: # File might have been removed by another concurrent function or non-existent
+                    pass
+        # else: # This case is covered by the makedirs above
+            # os.makedirs(resume_dir, exist_ok=True)
+
         for file in files:
             if file and allowed_file(file.filename):
                 filename = secure_filename(file.filename)
@@ -889,9 +901,11 @@ def download_results():
             flash('No results available to download.', 'warning')
             return redirect(url_for('index')) # Or return jsonify error
 
-        results_dir = app.config['UPLOAD_FOLDER']
+        # Ensure the base upload folder exists for writing the PDF
+        base_results_dir = app.config['UPLOAD_FOLDER']
+        os.makedirs(base_results_dir, exist_ok=True)
         pdf_filename = 'screening_results.pdf'
-        pdf_file_path = os.path.join(results_dir, pdf_filename)
+        pdf_file_path = os.path.join(base_results_dir, pdf_filename)
 
         # Create styles
         styles = getSampleStyleSheet()
@@ -1009,7 +1023,7 @@ def download_results():
         
         doc.build(story)
         
-        return send_from_directory(directory=results_dir, path=pdf_filename, as_attachment=True, download_name='screening_results.pdf')
+        return send_from_directory(directory=base_results_dir, path=pdf_filename, as_attachment=True, download_name='screening_results.pdf')
 
     except Exception as e:
         traceback.print_exc()
@@ -1024,14 +1038,24 @@ def reset_system():
         # Re-initialize with SMTP_CONFIG
         screening_system = JobScreeningSystem(smtp_config=SMTP_CONFIG)
 
-
-        for folder in ['job_descriptions', 'resumes']:
-            folder_path = os.path.join(app.config['UPLOAD_FOLDER'], folder)
-            for file in os.listdir(folder_path):
-                os.remove(os.path.join(folder_path, file))
+        # Clear /tmp subdirectories used by the app
+        for folder_name in ['job_descriptions', 'resumes']:
+            folder_path = os.path.join(app.config['UPLOAD_FOLDER'], folder_name)
+            if os.path.exists(folder_path):
+                for file_item in os.listdir(folder_path):
+                    item_path = os.path.join(folder_path, file_item)
+                    try:
+                        if os.path.isfile(item_path) or os.path.islink(item_path):
+                            os.unlink(item_path)
+                        # If you expect subdirectories inside job_descriptions/resumes, add shutil.rmtree
+                    except Exception as e_remove:
+                        print(f"Error removing {item_path}: {e_remove}")
         
-        return jsonify({'message': 'System reset successfully'})
-    
+        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], 'screening_results.pdf')
+        if os.path.exists(pdf_path) and os.path.isfile(pdf_path):
+            os.unlink(pdf_path)
+            
+        return jsonify({'message': 'System reset successfully (ephemeral data in /tmp cleared)'})
     except Exception as e:
         return jsonify({'error': f'Error resetting system: {str(e)}'}), 500
 
