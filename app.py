@@ -19,6 +19,14 @@ from email.mime.multipart import MIMEMultipart
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+# --- PDF Generation Imports ---
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+# --- End PDF Generation Imports ---
+
 # Load NLP model
 try:
     nlp = spacy.load("en_core_web_sm")
@@ -878,39 +886,136 @@ def send_notifications():
 def download_results():
     try:
         if not screening_system.match_results:
-            return jsonify({'error': 'No results available to download'}), 400
-        
-        # Convert results to JSON-serializable format
-        serializable_results = []
-        for result in screening_system.match_results:
-            serializable_result = {
-                'candidate': str(result.get('candidate', 'Unknown')),
-                'email': str(result.get('email', '')),
-                'file_name': str(result.get('file_name', '')),
-                'match_score': float(result.get('match_score', 0.0)),
-                'shortlisted': bool(result.get('shortlisted', False)),
-                'details': {
-                    'overall_score': float(result['details'].get('overall_score', 0.0)),
-                    'skill_score': float(result['details'].get('skill_score', 0.0)),
-                    'experience_score': float(result['details'].get('experience_score', 0.0)),
-                    'education_score': float(result['details'].get('education_score', 0.0)),
-                    'matched_skills': [str(skill) for skill in result['details'].get('matched_skills', [])]
-                }
-            }
-            serializable_results.append(serializable_result)
-        
+            flash('No results available to download.', 'warning')
+            return redirect(url_for('index')) # Or return jsonify error
+
         results_dir = app.config['UPLOAD_FOLDER']
-        results_filename = 'screening_results.json'
-        results_file_path = os.path.join(results_dir, results_filename)
+        pdf_filename = 'screening_results.pdf'
+        pdf_file_path = os.path.join(results_dir, pdf_filename)
+
+        # Create styles
+        styles = getSampleStyleSheet()
+        title_style = styles['h1']
+        title_style.alignment = 1 # Center alignment for title
+        heading_style = styles['h2']
+        heading_style.alignment = 1 # Center alignment for job title heading
+
+        # Base font for the document
+        base_font_name = 'Helvetica'
+        base_bold_font_name = 'Helvetica-Bold'
+
+        normal_style = ParagraphStyle(
+            'Normal',
+            parent=styles['Normal'],
+            fontName=base_font_name,
+            fontSize=9,
+            leading=11,
+            alignment=0 # Left alignment
+        )
+        small_normal_style = ParagraphStyle(
+            'SmallNormal',
+            parent=normal_style,
+            fontName=base_font_name,
+            fontSize=8,
+            leading=10,
+            alignment=0 # Left alignment
+        )
+
+
+        doc = SimpleDocTemplate(pdf_file_path, pagesize=landscape(letter),
+                                rightMargin=0.5*inch, leftMargin=0.5*inch,
+                                topMargin=0.5*inch, bottomMargin=0.5*inch)
+        story = []
+
+        story.append(Paragraph("Job Screening Results", title_style))
+        story.append(Spacer(1, 0.2*inch))
+
+        if screening_system.job_requirements and screening_system.job_requirements.get('title'):
+            story.append(Paragraph(f"Job Title: {screening_system.job_requirements['title']}", heading_style))
+            story.append(Spacer(1, 0.1*inch))
+
+        # Table data
+        table_data = [
+            [Paragraph("Candidate", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Email", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("File Name", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Match Score (%)", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Shortlisted?", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), 
+             Paragraph("Skill Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Exp. Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Edu. Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Matched Skills", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1))]
+        ]
+
+        for result in screening_system.match_results:
+            candidate_name = str(result.get('candidate', 'Unknown'))
+            email = str(result.get('email', 'N/A'))
+            file_name = str(result.get('file_name', 'N/A'))
+            match_score = f"{float(result.get('match_score', 0.0) * 100):.1f}"
+            shortlisted_text = "Yes" if bool(result.get('shortlisted', False)) else "No"
+            
+            details = result.get('details', {})
+            skill_score_val = f"{float(details.get('skill_score', 0.0) * 100):.1f}"
+            exp_score_val = f"{float(details.get('experience_score', 0.0) * 100):.1f}"
+            edu_score_val = f"{float(details.get('education_score', 0.0) * 100):.1f}"
+            
+            matched_skills_list = details.get('matched_skills', [])
+            matched_skills_str = ', '.join(map(str, matched_skills_list))
+            
+            # Use Paragraph for all cell content to ensure consistent styling and wrapping
+            candidate_para = Paragraph(candidate_name, normal_style)
+            email_para = Paragraph(email, small_normal_style)
+            filename_para = Paragraph(file_name, small_normal_style)
+            matched_skills_para = Paragraph(matched_skills_str, small_normal_style)
+
+            # Center align scores and boolean-like text
+            centered_normal_style = ParagraphStyle('CenteredNormal', parent=normal_style, alignment=1)
+            match_score_para = Paragraph(match_score, centered_normal_style)
+            shortlisted_para = Paragraph(shortlisted_text, centered_normal_style)
+            skill_score_para = Paragraph(skill_score_val, centered_normal_style)
+            exp_score_para = Paragraph(exp_score_val, centered_normal_style)
+            edu_score_para = Paragraph(edu_score_val, centered_normal_style)
+
+            table_data.append([
+                candidate_para,
+                email_para,
+                filename_para,
+                match_score_para,
+                shortlisted_para,
+                skill_score_para,
+                exp_score_para,
+                edu_score_para,
+                matched_skills_para
+            ])
+
+        # Create table
+        # Adjusted column widths to fit within landscape letter (10 inches usable width with 0.5in margins)
+        results_table = Table(table_data, colWidths=[
+            1.4*inch, 1.6*inch, 1.2*inch, # Candidate, Email, File Name
+            0.8*inch, 0.7*inch,           # Match Score, Shortlisted
+            0.8*inch, 0.8*inch, 0.8*inch, # Skill, Exp, Edu Scores
+            1.9*inch                      # Matched Skills
+        ]) # Total width approx 10.0 inches
+
+        results_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, 0), 'CENTER'), # Header text centered
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'), # Vertical alignment
+            ('FONTNAME', (0, 0), (-1, 0), base_bold_font_name),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('TOPPADDING', (0,0), (-1,0), 6), # Padding for header
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('LEFTPADDING', (0,0), (-1,-1), 6), # Padding for all cells
+            ('RIGHTPADDING', (0,0), (-1,-1), 6),
+            ('TOPPADDING', (0,1), (-1,-1), 4), # Top padding for data cells
+            ('BOTTOMPADDING', (0,1), (-1,-1), 4) # Bottom padding for data cells
+        ]))
+        story.append(results_table)
         
-        with open(results_file_path, 'w', encoding='utf-8') as f:
-            json.dump(serializable_results, f, indent=2, ensure_ascii=False)
+        doc.build(story)
         
-        return send_from_directory(directory=results_dir, path=results_filename, as_attachment=True, download_name='screening_results.json')
+        return send_from_directory(directory=results_dir, path=pdf_filename, as_attachment=True, download_name='screening_results.pdf')
+
     except Exception as e:
-        import traceback
         traceback.print_exc()
-        return jsonify({'error': f'Error saving results: {str(e)}'}), 500
+        # flash(f'Error generating PDF: {str(e)}', 'danger')
+        # return redirect(url_for('index'))
+        return jsonify({'error': f'Error generating PDF report: {str(e)}'}), 500
 
 @app.route('/reset_system', methods=['POST'])
 def reset_system():
@@ -938,7 +1043,7 @@ def get_status():
             'candidates_loaded': len(screening_system.candidates),
             'screening_completed': len(screening_system.match_results) > 0,
             'job_requirements': screening_system.job_requirements,
-            'last_screening_time': datetime.now().isoformat()
+            'last_screening_time': datetime.now().isoformat() # This might be better set when screening actually happens
         }
         
         return jsonify(status)
@@ -956,7 +1061,9 @@ def not_found(e):
 
 @app.errorhandler(500)
 def internal_error(e):
-    return jsonify({'error': 'Internal server error'}), 500
+    # Log the error for server-side inspection
+    traceback.print_exc()
+    return jsonify({'error': 'Internal server error. Please check server logs.'}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
