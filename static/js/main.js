@@ -17,8 +17,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // const keywordsWeightSlider = document.getElementById('keywordsWeight'); // Not used by current backend
 
     const screenBtn = document.getElementById('screenBtn');
-    const exportBtn = document.getElementById('exportBtn'); // General export, might need specific later
-    const notifyBtn = document.getElementById('notifyBtn');
+    const exportPdfBtn = document.getElementById('exportPdfBtn'); // Specific PDF export
+    const exportCsvBtn = document.getElementById('exportCsvBtn'); // Specific CSV export
     const resetBtn = document.getElementById('resetBtn');
 
     const resultsSection = document.getElementById('results');
@@ -26,38 +26,47 @@ document.addEventListener('DOMContentLoaded', () => {
     const loadingOverlay = document.getElementById('loadingOverlay');
     const loadingTitle = document.getElementById('loadingTitle');
     const loadingMessage = document.getElementById('loadingMessage');
+    const autoNotificationStatusDiv = document.getElementById('autoNotificationStatus');
+    const autoNotificationStatusText = document.getElementById('autoNotificationStatusText');
+
     let jobFileUploaded = false;
     let resumeFilesUploaded = false;
     let screeningResultsAvailable = false; // New flag
 
-    // --- Toast Notification Function ---
-    function showToast(title, message, type = 'info') {
-        const toastContainer = document.getElementById('toastContainer');
-        if (!toastContainer) {
-            console.warn('Toast container not found!');
+    // --- Popup Notification Function (Centered) ---
+    function showPopupNotification(title, message, type = 'info') {
+        const popupContainer = document.getElementById('popupNotificationContainer');
+        if (!popupContainer) {
+            console.warn('Popup notification container not found!');
             return;
         }
-
+        // Hide results section if visible
+        if (resultsSection && resultsSection.style.display !== 'none') {
+            resultsSection.style.display = 'none';
+        }
+        // Hide loading overlay if visible
+        if (loadingOverlay && loadingOverlay.style.display !== 'none') {
+            loadingOverlay.style.display = 'none';
+        }
         const iconClass = {
             success: 'fa-check-circle',
             error: 'fa-times-circle',
             warning: 'fa-exclamation-triangle',
             info: 'fa-info-circle'
         }[type] || 'fa-info-circle';
-
-        const toast = document.createElement('div');
-        toast.className = `toast ${type}`; // Ensure your CSS has .toast.success, .toast.error etc.
-        
-        toast.innerHTML = `
-            <div class="toast-icon"><i class="fas ${iconClass}"></i></div>
-            <div class="toast-content">
-                <div class="toast-title">${title}</div>
-                <div class="toast-message">${message}</div>
+        const popup = document.createElement('div');
+        popup.className = `popup-notification ${type}`;
+        popup.innerHTML = `
+            <span class="popup-icon"><i class="fas ${iconClass}"></i></span>
+            <div class="popup-content">
+                <div class="popup-title" style="font-weight:700;font-size:1.2em;">${title}</div>
+                <div class="popup-message">${message}</div>
             </div>
-            <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+            <button class="popup-close" aria-label="Close">&times;</button>
         `;
-        toastContainer.appendChild(toast);
-        setTimeout(() => toast.remove(), 5000);
+        popup.querySelector('.popup-close').onclick = () => popup.remove();
+        popupContainer.appendChild(popup);
+        setTimeout(() => { popup.remove(); }, 5000);
     }
 
     // --- Generic File Upload Function ---
@@ -102,11 +111,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 previewElement.innerHTML = successMsg;
                 statusElement.innerHTML = '<i class="fas fa-check-circle" style="color: var(--success-color);"></i>';
-                showToast('Success', result.message || 'File(s) uploaded successfully!', 'success');
+                showPopupNotification('Success', result.message || 'File(s) uploaded successfully!', 'success');
             } else {
                 previewElement.innerHTML = `<p><i class="fas fa-times-circle" style="color: var(--error-color);"></i> Upload failed: ${result.error || 'Unknown server error'}</p>`;
                 statusElement.innerHTML = '<i class="fas fa-times-circle" style="color: var(--error-color);"></i>';
-                showToast('Error', result.error || 'File(s) upload failed.', 'error');
+                showPopupNotification('Error', result.error || 'File(s) upload failed.', 'error');
                 if (inputName === 'job_description') jobFileUploaded = false;
                 if (inputName === 'resumes') resumeFilesUploaded = false;
             }
@@ -114,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Upload error:', error);
             previewElement.innerHTML = `<p><i class="fas fa-exclamation-triangle" style="color: var(--error-color);"></i> Network error or issue during upload. Check console.</p>`;
             statusElement.innerHTML = '<i class="fas fa-exclamation-triangle" style="color: var(--error-color);"></i>';
-            showToast('Error', 'An unexpected error occurred during upload.', 'error');
+            showPopupNotification('Error', 'An unexpected error occurred during upload.', 'error');
             if (inputName === 'job_description') jobFileUploaded = false;
             if (inputName === 'resumes') resumeFilesUploaded = false;
         }
@@ -128,8 +137,8 @@ document.addEventListener('DOMContentLoaded', () => {
             screenBtn.disabled = true;
         }
         // Export and Notify buttons depend on results being available
-        exportBtn.disabled = !screeningResultsAvailable;
-        notifyBtn.disabled = !screeningResultsAvailable;
+        if (exportPdfBtn) exportPdfBtn.disabled = !screeningResultsAvailable;
+        if (exportCsvBtn) exportCsvBtn.disabled = !screeningResultsAvailable;
     }
 
     // --- Event Listeners for Job Description ---
@@ -219,6 +228,9 @@ document.addEventListener('DOMContentLoaded', () => {
             loadingMessage.textContent = 'Analyzing resumes against the job description. This may take a moment.';
             loadingOverlay.style.display = 'flex';
 
+            // Show popup notification for loading
+            showPopupNotification('Screening Candidates...', 'Analyzing resumes against the job description. This may take a moment.', 'info');
+
             const threshold = parseFloat(thresholdSlider.value) / 100;
             const weights = {
                 skills: parseFloat(skillsWeightSlider.value) / 100,
@@ -244,17 +256,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 const screeningData = await response.json();
 
                 if (response.ok) {
-                    showToast('Success', screeningData.message || 'Screening completed!', 'success');
+                    showPopupNotification('Success', screeningData.message || 'Screening completed!', 'success');
                     displayResults(screeningData);
                     screeningResultsAvailable = true; // Set flag
+
+                    if (screeningData.automated_notifications_summary && autoNotificationStatusDiv && autoNotificationStatusText) {
+                        const summary = screeningData.automated_notifications_summary;
+                        if (summary.attempted > 0) {
+                            autoNotificationStatusText.textContent = `Automated notifications: ${summary.successful} sent, ${summary.failed} failed out of ${summary.attempted} shortlisted.`;
+                            autoNotificationStatusDiv.style.display = 'flex';
+                        } else {
+                            autoNotificationStatusText.textContent = 'No automated notifications sent (no shortlisted candidates or system issue).';
+                            autoNotificationStatusDiv.style.display = 'flex';
+                        }
+                    }
                     updateScreenButtonState(); // Update button states
                 } else {
-                    showToast('Error', screeningData.error || 'Screening failed.', 'error');
+                    showPopupNotification('Error', screeningData.error || 'Screening failed.', 'error');
                     resultsSection.style.display = 'none';
                 }
             } catch (error) {
                 console.error('Screening API call error:', error);
-                showToast('Error', 'An error occurred while contacting the server for screening.', 'error');
+                showPopupNotification('Error', 'An error occurred while contacting the server for screening.', 'error');
                 resultsSection.style.display = 'none';
             } finally {
                 loadingOverlay.style.display = 'none';
@@ -265,6 +288,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Display Results Function ---
     function displayResults(data) {
         resultsContent.innerHTML = ''; // Clear previous results
+        if (autoNotificationStatusDiv) autoNotificationStatusDiv.style.display = 'none'; // Hide by default
         if (!data.results || data.results.length === 0) {
             resultsContent.innerHTML = '<p class="no-results">No candidates found or processed.</p>';
             resultsSection.style.display = 'block'; // Show section even if no results
@@ -280,32 +304,33 @@ document.addEventListener('DOMContentLoaded', () => {
             totalScore += candidate.match_score;
             const card = document.createElement('div');
             card.className = `candidate-card ${candidate.shortlisted ? 'shortlisted' : 'rejected'}`;
-            
+
             const scorePercentage = (candidate.match_score * 100).toFixed(1);
             let scoreClass = 'low';
             if (scorePercentage >= 75) scoreClass = 'high';
             else if (scorePercentage >= 50) scoreClass = 'medium';
 
             card.innerHTML = `
-                <div class="candidate-header">
-                    <div class="candidate-info">
-                        <h4>${candidate.candidate} ${candidate.shortlisted ? '<i class="fas fa-check-circle" style="color: var(--success-color);"></i>' : '<i class="fas fa-times-circle" style="color: var(--error-color);"></i>'}</h4>
+                <div class="candidate-header" style="display: flex; justify-content: space-between; align-items: flex-start; gap: 1.2rem;">
+                    <div class="candidate-info" style="flex: 1 1 0; min-width: 0;">
+                        <h4 style="word-break: break-word;">${candidate.candidate} ${candidate.shortlisted
+                            ? '<span class=\'status shortlisted\' style=\'margin-left:0.5rem;vertical-align:middle;\'><i class=\'fas fa-check-circle\'></i> Shortlisted</span>'
+                            : '<span class=\'status rejected\' style=\'margin-left:0.5rem;vertical-align:middle;\'><i class=\'fas fa-times-circle\'></i> Rejected</span>'}
+                        </h4>
                         <span class="email"><i class="fas fa-envelope"></i> ${candidate.email || 'N/A'}</span>
-                        <span class="filename"><i class="fas fa-file-alt"></i> ${candidate.file_name}</span>
+                        ${data.job_title ? `<span class='job-title'><i class='fas fa-briefcase'></i> Job Title: ${data.job_title}</span>` : ''}
                     </div>
-                    <div class="candidate-metrics">
-                        <div class="score ${scoreClass}">${scorePercentage}%</div>
-                        <span class="status ${candidate.shortlisted ? 'shortlisted' : 'rejected'}">
-                            ${candidate.shortlisted ? 'Shortlisted' : 'Rejected'}
-                        </span>
+                    <div class="candidate-metrics" style="display: flex; flex-direction: column; align-items: flex-end; min-width: 80px;">
+                        <div class="score ${scoreClass}" style="font-size:2.1rem; font-weight:800;">${scorePercentage}%</div>
                     </div>
                 </div>
                 <div class="candidate-details">
-                    <p><strong>Skill Score:</strong> ${(candidate.details.skill_score * 100).toFixed(1)}% | 
-                       <strong>Experience Score:</strong> ${(candidate.details.experience_score * 100).toFixed(1)}% | 
-                       <strong>Education Score:</strong> ${(candidate.details.education_score * 100).toFixed(1)}%
-                    </p>
-                    <p><strong>Matched Skills:</strong> ${candidate.details.matched_skills.join(', ') || 'None'}</p>
+                    <div style="background: #fdf6f0; border-radius: 1rem; padding: 1rem 1.2rem; margin-bottom: 0.5rem;">
+                        <strong>Skill Score:</strong> ${(candidate.details.skill_score * 100).toFixed(1)}% |
+                        <strong>Experience Score:</strong> ${(candidate.details.experience_score * 100).toFixed(1)}% |
+                        <strong>Education Score:</strong> ${(candidate.details.education_score * 100).toFixed(1)}%
+                        <br><strong>Matched Skills:</strong> ${candidate.details.matched_skills.join(', ') || 'None'}
+                    </div>
                 </div>
             `;
             resultsContent.appendChild(card);
@@ -334,7 +359,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const response = await fetch('/reset_system', { method: 'POST' });
                 const result = await response.json();
                 if (response.ok) {
-                    showToast('Success', result.message || 'System reset successfully.', 'success');
+                    showPopupNotification('Success', result.message || 'System reset successfully.', 'success');
                     // Clear UI elements
                     jobFilePreview.innerHTML = ''; jobFilePreview.classList.remove('show');
                     resumeFilePreview.innerHTML = ''; resumeFilePreview.classList.remove('show');
@@ -350,69 +375,52 @@ document.addEventListener('DOMContentLoaded', () => {
                     resultsSection.style.display = 'none';
                     document.getElementById('totalCandidates').textContent = 0;
                     document.getElementById('shortlistedCount').textContent = 0;
+                    if (autoNotificationStatusDiv) autoNotificationStatusDiv.style.display = 'none';
                 } else {
-                    showToast('Error', result.error || 'Failed to reset system.', 'error');
+                    showPopupNotification('Error', result.error || 'Failed to reset system.', 'error');
                 }
             } catch (error) {
-                showToast('Error', 'Error resetting system.', 'error');
+                showPopupNotification('Error', 'Error resetting system.', 'error');
             }
         });
     }
     // --- Event listeners for export buttons (placeholder actions) ---
-    const exportPdfBtn = document.getElementById('exportPdfBtn');
     if (exportPdfBtn) {
         exportPdfBtn.addEventListener('click', () => {
+            if(exportPdfBtn.disabled) return;
             window.location.href = '/download_results'; // This should trigger the PDF download
         });
     }
-    // Link general export button to PDF export for now
-    if(exportBtn) {
-        exportBtn.addEventListener('click', () => {
-            if(exportBtn.disabled) return;
-            window.location.href = '/download_results';
+
+    if (exportCsvBtn) {
+        exportCsvBtn.addEventListener('click', () => {
+            if(exportCsvBtn.disabled) return;
+            // This tells the browser to navigate to the CSV download URL.
+            // The backend (app.py) will send headers to make it a download.
+            window.location.href = '/download_results_csv';
         });
     }
-
-    // --- Notify Button Logic ---
-    if (notifyBtn) {
-        notifyBtn.addEventListener('click', async () => {
-            if (notifyBtn.disabled) return;
-
-            // Optional: Add a modal to get company name or use a default
-            const companyName = prompt("Enter your company name for notifications:", "Our Company");
-            if (companyName === null) return; // User cancelled
-
-            loadingTitle.textContent = 'Sending Notifications...';
-            loadingMessage.textContent = 'Please wait while emails are being sent.';
-            loadingOverlay.style.display = 'flex';
-
-            const threshold = parseFloat(thresholdSlider.value) / 100; // Use current threshold
-
-            try {
-                const response = await fetch('/send_notifications', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ company_name: companyName, threshold: threshold })
-                });
-                const notificationData = await response.json();
-
-                if (response.ok) {
-                    showToast('Success', notificationData.message || 'Notification process completed!', 'success');
-                    console.log('Notification Log:', notificationData.notification_log);
-                    // Optionally display the log in a modal or a dedicated section
-                } else {
-                    showToast('Error', notificationData.error || 'Failed to send notifications.', 'error');
-                }
-            } catch (error) {
-                console.error('Notification API call error:', error);
-                showToast('Error', 'An error occurred while contacting the server for notifications.', 'error');
-            } finally {
-                loadingOverlay.style.display = 'none';
-            }
-        });
-    }
-
 
     // Initial state
     updateScreenButtonState();
+
+    // --- SCROLL BLUR EFFECT LOGIC ---
+    function updateScrollBlur() {
+        const topBlur = document.querySelector('.scroll-blur-top');
+        const bottomBlur = document.querySelector('.scroll-blur-bottom');
+        const scrollY = window.scrollY;
+        const windowHeight = window.innerHeight;
+        const docHeight = document.body.scrollHeight;
+        // Fade out top blur as you scroll down, fade in as you reach top
+        if (topBlur) {
+            topBlur.style.opacity = Math.max(0, 1 - scrollY / 120);
+        }
+        // Fade out bottom blur as you reach bottom, fade in as you scroll up
+        if (bottomBlur) {
+            const fromBottom = docHeight - (scrollY + windowHeight);
+            bottomBlur.style.opacity = Math.max(0, 1 - (fromBottom / 120));
+        }
+    }
+    window.addEventListener('scroll', updateScrollBlur);
+    updateScrollBlur();
 });

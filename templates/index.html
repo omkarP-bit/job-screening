@@ -3,10 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Job Screening System</title>
+    <title>Buzzing Bees</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
 <body>
     <div class="background-animation">
@@ -24,9 +27,9 @@
         <div class="header">
             <div class="header-content">
                 <div class="logo">
-                    <i class="fas fa-robot"></i>
+                    <img src="{{ url_for('static', filename='images/placeholder_logo.png') }}" alt="Buzzing Bees Logo" style="height: 50px;">
                 </div>
-                <h1>AI Job Screening System</h1>
+                <h1>Buzzing Bees</h1>
                 <p>Streamline your recruitment process with intelligent candidate matching</p>
                 <div class="header-stats">
                     <div class="stat">
@@ -51,7 +54,7 @@
                 <div class="step-header">
                     <div class="step-number">1</div>
                     <div class="step-info">
-                        <h3><i class="fas fa-file-text"></i> Upload Job Description</h3>
+                        <h3><i class="fas fa-file-text" aria-hidden="true"></i> Upload Job Description</h3>
                         <p>Upload the job description to match candidates against</p>
                     </div>
                     <div class="step-status" id="jobStatus">
@@ -61,7 +64,7 @@
                 <div class="step-content">
                     <div class="upload-area" id="jobUploadArea">
                         <div class="upload-icon">
-                            <i class="fas fa-cloud-upload-alt"></i>
+                            <i class="fas fa-cloud-upload-alt" aria-hidden="true"></i>
                         </div>
                         <p>Drag & drop your job description here</p>
                         <span>or</span>
@@ -80,7 +83,7 @@
                 <div class="step-header">
                     <div class="step-number">2</div>
                     <div class="step-info">
-                        <h3><i class="fas fa-users"></i> Upload Candidate Resumes</h3>
+                        <h3><i class="fas fa-users" aria-hidden="true"></i> Upload Candidate Resumes</h3>
                         <p>Upload multiple resumes for screening (Max: 50 files)</p>
                     </div>
                     <div class="step-status" id="resumeStatus">
@@ -90,7 +93,7 @@
                 <div class="step-content">
                     <div class="upload-area" id="resumeUploadArea">
                         <div class="upload-icon">
-                            <i class="fas fa-cloud-upload-alt"></i>
+                            <i class="fas fa-cloud-upload-alt" aria-hidden="true"></i>
                         </div>
                         <p>Drag & drop candidate resumes here</p>
                         <span>or</span>
@@ -109,12 +112,12 @@
                 <div class="step-header">
                     <div class="step-number">3</div>
                     <div class="step-info">
-                        <h3><i class="fas fa-sliders-h"></i> Screening Parameters</h3>
+                        <h3><i class="fas fa-sliders-h" aria-hidden="true"></i> Screening Parameters</h3>
                         <p>Configure matching threshold and screening criteria</p>
                     </div>
                 </div>
                 <div class="step-content">
-                    <div class="parameters-grid">
+                    <div class="parameters-column-layout"> <!-- Changed class for overall layout of parameter groups -->
                         <div class="parameter-group">
                             <label for="threshold">
                                 Match Threshold: 
@@ -132,32 +135,43 @@
                         </div>
                         
                         <div class="parameter-group">
-                            <label>
-                                <i class="fas fa-weight-hanging"></i> Screening Criteria Weights
-                            </label>
-                            <div class="criteria-weights">
-                                <div class="weight-item">
-                                    <span>Skills Match</span>
-                                    <input type="range" id="skillsWeight" min="0" max="100" value="40">
-                                    <span class="weight-value">40%</span>
-                                </div>
-                                <div class="weight-item">
-                                    <span>Experience</span>
-                                    <input type="range" id="experienceWeight" min="0" max="100" value="30">
-                                    <span class="weight-value">30%</span>
-                                </div>
-                                <div class="weight-item">
-                                    <span>Education</span>
-                                    <input type="range" id="educationWeight" min="0" max="100" value="20">
-                                    <span class="weight-value">20%</span>
-                                </div>
-                                <div class="weight-item">
-                                    <span>Keywords</span>
-                                    <input type="range" id="keywordsWeight" min="0" max="100" value="10">
-                                    <span class="weight-value">10%</span>
-                                </div>
+                            <div style="display: flex; align-items: center; margin-bottom: 0.5rem;">
+                                <input type="checkbox" id="autoAcceptToggle" name="autoAcceptToggle" style="width: 1.3em; height: 1.3em; margin-right: 0.75rem; accent-color: var(--primary-color); cursor: pointer;">
+                                <label for="autoAcceptToggle" style="font-weight: 600; color: var(--primary-dark); font-size: 1.1rem; cursor: pointer;">
+                                    Enable Auto-Accept
+                                </label>
                             </div>
-                            <small><i class="fas fa-info-circle"></i> Adjust the importance of different matching criteria</small>
+                            <small><i class="fas fa-info-circle"></i> If enabled, candidates significantly exceeding the match threshold (e.g., >90%) can be automatically accepted.</small>
+                        </div>
+
+
+                        <div class="parameter-group">
+                            <fieldset>
+                                <legend><i class="fas fa-weight-hanging" aria-hidden="true"></i> Screening Criteria Weights</legend>
+                                <div class="criteria-weights criteria-weights-grid-layout"> <!-- Added class for grid layout of weight items -->
+                                    <div class="weight-item">
+                                        <label for="skillsWeight">Skills Match</label>
+                                        <input type="range" id="skillsWeight" name="skillsWeight" min="0" max="100" value="40">
+                                        <span class="weight-value">40%</span>
+                                    </div>
+                                    <div class="weight-item">
+                                        <label for="experienceWeight">Experience</label>
+                                        <input type="range" id="experienceWeight" name="experienceWeight" min="0" max="100" value="30">
+                                        <span class="weight-value">30%</span>
+                                    </div>
+                                    <div class="weight-item">
+                                        <label for="educationWeight">Education</label>
+                                        <input type="range" id="educationWeight" name="educationWeight" min="0" max="100" value="20">
+                                        <span class="weight-value">20%</span>
+                                    </div>
+                                    <div class="weight-item">
+                                        <label for="keywordsWeight">Keywords</label>
+                                        <input type="range" id="keywordsWeight" name="keywordsWeight" min="0" max="100" value="10">
+                                        <span class="weight-value">10%</span>
+                                    </div>
+                                </div>
+                                <small><i class="fas fa-info-circle"></i> Adjust the importance of different matching criteria</small>
+                            </fieldset>
                         </div>
                     </div>
                 </div>
@@ -167,21 +181,13 @@
             <div class="action-section">
                 <div class="primary-actions">
                     <button class="btn btn-primary" id="screenBtn" disabled>
-                        <i class="fas fa-search"></i>
+                        <i class="fas fa-search" aria-hidden="true"></i>
                         <span>Screen Candidates</span>
                     </button>
                 </div>
                 <div class="secondary-actions">
-                    <button class="btn btn-secondary" id="exportBtn" disabled>
-                        <i class="fas fa-download"></i>
-                        <span>Export Results</span>
-                    </button>
-                    <button class="btn btn-secondary" id="notifyBtn" disabled>
-                        <i class="fas fa-envelope"></i>
-                        <span>Send Notifications</span>
-                    </button>
                     <button class="btn btn-danger" id="resetBtn">
-                        <i class="fas fa-redo"></i>
+                        <i class="fas fa-redo" aria-hidden="true"></i>
                         <span>Reset System</span>
                     </button>
                 </div>
@@ -203,7 +209,7 @@
             <!-- Results Section -->
             <div class="results" id="results" style="display: none;">
                 <div class="results-header">
-                    <h3><i class="fas fa-chart-bar"></i> Screening Results</h3>
+                    <h3><i class="fas fa-chart-bar" aria-hidden="true"></i> Screening Results</h3>
                     <div class="results-summary" id="resultsSummary">
                         <div class="summary-item">
                             <span class="summary-number" id="totalProcessed">0</span>
@@ -220,34 +226,10 @@
                     </div>
                     <div class="results-actions">
                         <button class="btn btn-small btn-outline" id="exportPdfBtn">
-                            <i class="fas fa-file-pdf"></i> Export PDF
+                            <i class="fas fa-file-pdf" aria-hidden="true"></i> Export PDF
                         </button>
                         <button class="btn btn-small btn-outline" id="exportCsvBtn">
-                            <i class="fas fa-file-csv"></i> Export CSV
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- Filter and Sort Controls -->
-                <div class="results-controls">
-                    <div class="filter-controls">
-                        <select id="filterStatus" class="form-select">
-                            <option value="all">All Candidates</option>
-                            <option value="shortlisted">Shortlisted Only</option>
-                            <option value="rejected">Rejected Only</option>
-                        </select>
-                        <select id="sortBy" class="form-select">
-                            <option value="score">Sort by Score</option>
-                            <option value="name">Sort by Name</option>
-                            <option value="experience">Sort by Experience</option>
-                        </select>
-                    </div>
-                    <div class="view-controls">
-                        <button class="btn btn-small view-btn active" data-view="grid">
-                            <i class="fas fa-th"></i>
-                        </button>
-                        <button class="btn btn-small view-btn" data-view="list">
-                            <i class="fas fa-list"></i>
+                            <i class="fas fa-file-csv" aria-hidden="true"></i> Export CSV
                         </button>
                     </div>
                 </div>
@@ -259,8 +241,13 @@
         </div>
     </div>
 
-    <!-- Toast Notifications -->
-    <div class="toast-container" id="toastContainer"></div>
+    <!-- Top Blur Overlay for Scroll Effect -->
+    <div class="scroll-blur scroll-blur-top"></div>
+    <!-- Bottom Blur Overlay for Scroll Effect -->
+    <div class="scroll-blur scroll-blur-bottom"></div>
+
+    <!-- Centered Pop-up Notification -->
+    <div class="popup-notification-container" id="popupNotificationContainer"></div>
 
     <!-- Loading Overlay -->
     <div class="loading-overlay" id="loadingOverlay" style="display: none;">
@@ -280,8 +267,8 @@
         <div class="modal">
             <div class="modal-header">
                 <h3 id="modalTitle">Confirm Action</h3>
-                <button class="modal-close" id="modalClose">
-                    <i class="fas fa-times"></i>
+                <button class="modal-close" id="modalClose" aria-label="Close">
+                    <i class="fas fa-times" aria-hidden="true"></i>
                 </button>
             </div>
             <div class="modal-body">

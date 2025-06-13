@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, send_from_directory
+from flask import Flask, request, jsonify, render_template, redirect, url_for, flash, send_from_directory, Response
 from werkzeug.utils import secure_filename
 import os
 import json
@@ -8,10 +8,13 @@ from datetime import datetime
 # Import the complete JobScreeningSystem and related classes
 import re
 import numpy as np
+import pandas as pd
 import spacy
 import PyPDF2
 import docx
 import pdfplumber
+import io
+import csv
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -61,14 +64,14 @@ class JobDescriptionParser:
                     if page_text:
                         text += page_text + "\n"
         except Exception as e:
-            print(f"Error extracting from PDF: {e}")
+            app.logger.error(f"Error extracting from PDF with pdfplumber: {e}")
             try:
                 with open(file_path, 'rb') as file:
                     pdf_reader = PyPDF2.PdfReader(file)
                     for page in pdf_reader.pages:
                         text += page.extract_text() + "\n"
             except Exception as e2:
-                print(f"Fallback PDF extraction also failed: {e2}")
+                app.logger.error(f"Fallback PDF extraction with PyPDF2 also failed: {e2}")
         return text
     
     def _extract_from_docx(self, file_path):
@@ -77,7 +80,7 @@ class JobDescriptionParser:
             doc = docx.Document(file_path)
             return "\n".join([paragraph.text for paragraph in doc.paragraphs])
         except Exception as e:
-            print(f"Error extracting from DOCX: {e}")
+            app.logger.error(f"Error extracting from DOCX: {e}")
             return ""
     
     def summarize(self, text):
@@ -105,13 +108,13 @@ class JobDescriptionParser:
             sent_text = sent.text.lower()
             
             if any(pattern in sent_text for pattern in skill_patterns):
-                skills.append(sent.text.strip())
+                skills.append(sent.text.strip().capitalize())
             
             if any(pattern in sent_text for pattern in edu_patterns):
-                education.append(sent.text.strip())
+                education.append(sent.text.strip().capitalize())
             
             if any(pattern in sent_text for pattern in exp_patterns):
-                experience.append(sent.text.strip())
+                experience.append(sent.text.strip().capitalize())
         
         location_pattern = r"location:?\s*([\w\s,]+)"
         job_type_pattern = r"(full[- ]time|part[- ]time|contract|remote|hybrid)"
@@ -119,14 +122,14 @@ class JobDescriptionParser:
         location_match = re.search(location_pattern, text, re.IGNORECASE)
         job_type_match = re.search(job_type_pattern, text, re.IGNORECASE)
         
-        location = location_match.group(1).strip() if location_match else "Not specified"
-        job_type = job_type_match.group(1).strip() if job_type_match else "Not specified"
+        location = location_match.group(1).strip().capitalize() if location_match else "Not specified"
+        job_type = job_type_match.group(1).strip().capitalize() if job_type_match else "Not specified"
         
         requirements = {
             "skills": skills,
             "education": education,
             "experience": experience,
-            "location": location,
+            "location": location.capitalize(), # Ensure "Not specified" is also capitalized
             "job_type": job_type,
             "summary": self.summarize(text)
         }
@@ -140,26 +143,26 @@ class JobDescriptionParser:
         skills = []
         skill_keywords = ["python", "java", "javascript", "sql", "html", "css", "react", "angular", "node"]
         for skill in skill_keywords:
-            if skill in text_lower:
-                skills.append(skill)
+            if skill.lower() in text_lower: # Ensure comparison is robust
+                skills.append(skill.capitalize())
         
         education = []
         if "bachelor" in text_lower or "degree" in text_lower:
-            education.append("Bachelor's degree required")
+            education.append("Bachelor's degree required".capitalize())
         if "master" in text_lower:
-            education.append("Master's degree preferred")
+            education.append("Master's degree preferred".capitalize())
         
         experience = []
         exp_match = re.search(r"(\d+)\s*years?\s*experience", text_lower)
         if exp_match:
-            experience.append(f"{exp_match.group(1)} years of experience required")
+            experience.append(f"{exp_match.group(1)} years of experience required".capitalize())
         
         return {
             "skills": skills,
             "education": education,
             "experience": experience,
-            "location": "Not specified",
-            "job_type": "Not specified",
+            "location": "Not specified".capitalize(),
+            "job_type": "Not specified".capitalize(),
             "summary": self.summarize(text)
         }
 
@@ -192,14 +195,14 @@ class ResumeParser:
                     if page_text:
                         text += page_text + "\n"
         except Exception as e:
-            print(f"Error extracting from PDF: {e}")
+            app.logger.error(f"Error extracting resume from PDF with pdfplumber: {e}")
             try:
                 with open(file_path, 'rb') as file:
                     pdf_reader = PyPDF2.PdfReader(file)
                     for page in pdf_reader.pages:
                         text += page.extract_text() + "\n"
             except Exception as e2:
-                print(f"Fallback PDF extraction also failed: {e2}")
+                app.logger.error(f"Fallback resume PDF extraction with PyPDF2 also failed: {e2}")
         return text
     
     def _extract_from_docx(self, file_path):
@@ -208,36 +211,88 @@ class ResumeParser:
             doc = docx.Document(file_path)
             return "\n".join([paragraph.text for paragraph in doc.paragraphs])
         except Exception as e:
-            print(f"Error extracting from DOCX: {e}")
+            app.logger.error(f"Error extracting resume from DOCX: {e}")
             return ""
     
     def extract_contact_info(self, text):
         """Extract contact information from resume"""
         email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
         emails = re.findall(email_pattern, text)
-        
+
         phone_pattern = r'(\+\d{1,3}\s?)?(\(?\d{3}\)?[\s.-]?)?\d{3}[\s.-]?\d{4}'
-        phones = re.findall(phone_pattern, text)
-        
+        raw_phones = re.findall(phone_pattern, text)
+        # Extract only digits and filter out very short sequences
+        phones_digits = [''.join(filter(str.isdigit, ''.join(parts))) for parts in raw_phones]
+        phones_digits = [p for p in phones_digits if len(p) >= 7] # Basic filter for length
+
         name = ""
-        if self.nlp:
-            doc = self.nlp(text)
+        stripped_lines = [line.strip() for line in text.strip().split('\n') if line.strip()]
+
+        # Attempt 1: Heuristic for name in the first few lines
+        if not name and stripped_lines:
+            exclusion_keywords = [
+                'email', 'phone', 'mobile', 'tel', 'linkedin', 'github', 'portfolio', 'website', 'http', '@',
+                'profile', 'summary', 'objective', 'career', 'experience', 'education', 'skills', 
+                'projects', 'awards', 'references', 'contact', 'information', 'details', 'address',
+                'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'
+            ]
+            for i in range(min(5, len(stripped_lines))): # Check first 5 non-empty lines
+                line_text = stripped_lines[i]
+                words = line_text.split()
+
+                if not (1 <= len(words) <= 6 and len(line_text) < 60 and '@' not in line_text and 'http' not in line_text):
+                    continue
+
+                contains_exclusion = False
+                for kw in exclusion_keywords:
+                    if re.search(r'\b' + re.escape(kw) + r'\b', line_text, re.IGNORECASE):
+                        contains_exclusion = True
+                        break
+                if contains_exclusion:
+                    continue
+                
+                if re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ\s'-]+", line_text) and not line_text.endswith(('.', '!', '?')):
+                    is_capitalized_properly = False
+                    if all(word[0].isupper() for word in words if word and word[0].isalpha()):
+                        is_capitalized_properly = True
+                    elif line_text.isupper() and len(words) <= 3:
+                        is_capitalized_properly = True
+                    
+                    if is_capitalized_properly:
+                        if len(words) > 1 or (len(words) == 1 and len(words[0]) > 2 and words[0].lower() not in ['resume', 'cv']):
+                            name = line_text
+                            app.logger.info(f"Name extracted by heuristic (top lines): '{name}'")
+                            break 
+        
+        # Attempt 2: spaCy PERSON entity
+        if not name and self.nlp:
+            doc = self.nlp(text[:1000]) # Process only the beginning for relevance and speed
             for ent in doc.ents:
                 if ent.label_ == "PERSON":
-                    name = ent.text
-                    break
+                    potential_name = ent.text.strip()
+                    p_words = potential_name.split()
+                    if 1 <= len(p_words) <= 5 and len(potential_name) < 50 and '.' not in potential_name and '@' not in potential_name:
+                        if all(w[0].isupper() for w in p_words if w and w[0].isalpha()) or (len(p_words) <=2 and potential_name.isupper()):
+                            name = potential_name
+                            app.logger.info(f"Name extracted by spaCy: '{name}'")
+                            break 
         
-        if not name:
-            lines = text.strip().split('\n')
-            if lines:
-                first_line = lines[0].strip()
-                if len(first_line.split()) <= 3 and not any(char.isdigit() for char in first_line):
-                    name = first_line
-        
+        # Attempt 3: Fallback to the first non-empty line (very constrained)
+        if not name and stripped_lines:
+            first_line_candidate = stripped_lines[0]
+            fallback_exclusion_keywords = exclusion_keywords + ['resume', 'cv', 'curriculum vitae']
+            if 1 <= len(first_line_candidate.split()) <= 5 and \
+               len(first_line_candidate) < 50 and \
+               not any(char.isdigit() for char in first_line_candidate) and \
+               not any(kw.lower() in first_line_candidate.lower() for kw in fallback_exclusion_keywords) and \
+               re.fullmatch(r"[A-Za-zÀ-ÖØ-öø-ÿ\s'-]+", first_line_candidate):
+                name = first_line_candidate
+                app.logger.info(f"Name extracted by fallback (first line): '{name}'")
+
         return {
-            "name": name,
+            "name": name.strip(),
             "email": emails[0] if emails else "",
-            "phone": ''.join(phones[0]) if phones else ""
+            "phone": phones_digits[0] if phones_digits else "" # Return the first, longest, cleaned phone number
         }
     
     def extract_education(self, text):
@@ -250,13 +305,13 @@ class ResumeParser:
             for sent in doc.sents:
                 sent_text = sent.text.lower()
                 if any(keyword in sent_text for keyword in edu_keywords):
-                    education.append(sent.text.strip())
+                    education.append(sent.text.strip().capitalize())
         else:
             lines = text.split('\n')
             for line in lines:
                 line_lower = line.lower()
                 if any(keyword in line_lower for keyword in edu_keywords):
-                    education.append(line.strip())
+                    education.append(line.strip().capitalize())
         
         return education
     
@@ -264,18 +319,20 @@ class ResumeParser:
         """Extract skills from resume"""
         tech_skills = [
             "python", "java", "javascript", "sql", "html", "css", "react", "angular", "node", 
-            "aws", "azure", "gcp", "docker", "kubernetes", "git", "tensorflow", "pytorch", 
+            "aws", "azure", "gcp", "docker", "kubernetes", "git", "tensorflow", "pytorch",
             "machine learning", "data science", "deep learning", "ai", "artificial intelligence",
             "nlp", "natural language processing", "computer vision", "c++", "c#", "php", "r"
-        ]
+        ] # These are kept lowercase for matching
         
         skills = []
         text_lower = text.lower()
         
         for skill in tech_skills:
-            if skill in text_lower:
-                skills.append(skill)
-        
+            # Use regex for whole word matching for better accuracy
+            pattern = r'\b' + re.escape(skill) + r'\b'
+            if re.search(pattern, text_lower):
+                skills.append(skill.capitalize()) # Capitalize the skill before adding
+                
         return skills
     
     def extract_experience(self, text):
@@ -298,14 +355,14 @@ class ResumeParser:
                 for sent in self.nlp(exp_text).sents:
                     for ent in sent.ents:
                         if ent.label_ == "ORG":
-                            experience.append(sent.text.strip())
+                            experience.append(sent.text.strip().capitalize())
                             break
         else:
             lines = text.split('\n')
             for line in lines:
                 line_lower = line.lower()
                 if any(keyword in line_lower for keyword in exp_keywords):
-                    experience.append(line.strip())
+                    experience.append(line.strip().capitalize())
         
         return experience
     
@@ -333,22 +390,26 @@ class MatchingEngine:
     def __init__(self):
         self.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
     
-    def calculate_skill_match(self, jd_skills, resume_skills):
+    def calculate_skill_match(self, jd_skill_phrases, resume_canonical_skills):
         """Calculate match score for skills"""
-        if not jd_skills:
+        # If JD parsing yields no skill sentences, assume perfect match for this category
+        if not jd_skill_phrases:
             return 1.0
+        # If resume has no skills, but JD expects some (jd_skill_phrases is not empty)
+        if not resume_canonical_skills:
+            return 0.0
+
+        jd_text_blob_lower = " ".join(s.lower() for s in jd_skill_phrases)
         
-        jd_skill_keywords = []
-        for skill_text in jd_skills:
-            words = skill_text.lower().split()
-            jd_skill_keywords.extend(words)
+        matched_count = 0
+        for r_skill in resume_canonical_skills: # e.g., "Python", "Machine Learning"
+            # Match the canonical resume skill (lowercase, with word boundaries) in the JD text blob
+            pattern = r'\b' + re.escape(r_skill.lower()) + r'\b'
+            if re.search(pattern, jd_text_blob_lower):
+                matched_count += 1
         
-        matches = 0
-        for skill in jd_skill_keywords:
-            if any(skill in resume_skill.lower() for resume_skill in resume_skills):
-                matches += 1
-        
-        return matches / len(jd_skill_keywords) if jd_skill_keywords else 0.0
+        # Score: proportion of the candidate's listed skills that are found in the JD's skill requirements.
+        return matched_count / len(resume_canonical_skills)
     
     def calculate_experience_match(self, jd_experience, resume_experience):
         """Calculate match score for experience using semantic similarity"""
@@ -364,7 +425,7 @@ class MatchingEngine:
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return similarity
         except Exception as e:
-            print(f"Error calculating experience match: {e}")
+            app.logger.error(f"Error calculating experience match: {e}")
             return 0.0
     
     def calculate_education_match(self, jd_education, resume_education):
@@ -384,7 +445,7 @@ class MatchingEngine:
             similarity = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
             return similarity
         except Exception as e:
-            print(f"Error calculating education match: {e}")
+            app.logger.error(f"Error calculating education match: {e}")
             return 0.0
     
     def match_resume_to_jd(self, job_requirements, resume_data, weights=None):
@@ -425,14 +486,23 @@ class MatchingEngine:
             "matched_skills": []
         }
         
-        jd_skills = job_requirements.get("skills", [])
-        resume_skills = resume_data.get("skills", [])
-        
-        for jd_skill in jd_skills:
-            jd_skill_words = jd_skill.lower().split()
-            for word in jd_skill_words:
-                if any(word in resume_skill.lower() for resume_skill in resume_skills):
-                    match_details["matched_skills"].append(word)
+        # New logic for populating match_details["matched_skills"] for clarity
+        jd_skill_phrases = job_requirements.get("skills", [])  # List of skill-related sentences from JD
+        resume_skill_keywords = resume_data.get("skills", []) # List of canonical skills from resume, e.g., ["python", "machine learning"]
+
+        identified_matches = set()
+        if jd_skill_phrases and resume_skill_keywords:
+            # Combine all JD skill phrases into a single lowercase string for efficient searching.
+            jd_skills_text_blob_lower = " ".join(s.lower() for s in jd_skill_phrases)
+
+            for r_skill_keyword in resume_skill_keywords: # Iterate through canonical skills from resume
+                # Use regex to match whole words/phrases, accounting for special characters in skill names.
+                # For example, r_skill_keyword "c++" becomes pattern r'\bc\+\+\b'
+                pattern = r'\b' + re.escape(r_skill_keyword.lower()) + r'\b'
+                if re.search(pattern, jd_skills_text_blob_lower):
+                    identified_matches.add(r_skill_keyword) # Add the canonical skill name
+
+        match_details["matched_skills"] = sorted(list(identified_matches))
         
         return match_details
 
@@ -449,65 +519,72 @@ class NotificationSystem:
         # Email templates
         self.templates = {
             "shortlisted": """
-            Subject: You've Been Shortlisted for {job_title}
+Subject: Update Regarding Your Application for the {job_title} at {company_name}
 
-            Dear {candidate_name},
+<p>Dear {candidate_name},</p>
 
-            We're pleased to inform you that your application for the {job_title} position
-            has been shortlisted. Our AI-powered screening system identified a strong match
-            between your qualifications and our requirements.
+<p>We are pleased to inform you that your application for the <strong>the {job_title}</strong> position at <strong>{company_name}</strong> has progressed to the next stage. Our initial review, supported by our AI-powered screening system, indicates a strong alignment between your profile and the requirements for this role.</p>
 
-            Your overall match score: {match_score}%
+<p>Your profile received an overall match score of <strong>{match_score}%</strong>.</p>
 
-            Our HR team will contact you shortly to schedule an interview.
+<p>Our Human Resources department will be in contact with you in the near future to discuss the subsequent steps in the selection process, which may include an interview.</p>
 
-            Best regards,
-            {company_name} Recruitment Team
-            """,
+<p>We appreciate your interest in {company_name} and look forward to potentially speaking with you further.</p>
+
+<p>Sincerely,</p>
+<p>The {company_name} Recruitment Team</p>
+""",
 
             "rejected": """
-            Subject: Update on Your Application for {job_title}
+Subject: Regarding Your Application for the {job_title} at {company_name}
 
-            Dear {candidate_name},
+<p>Dear {candidate_name},</p>
 
-            Thank you for your interest in the {job_title} position at {company_name}.
+<p>Thank you for your interest in the <strong>the {job_title}</strong> position at <strong>{company_name}</strong> and for taking the time to apply.</p>
 
-            After careful review of your application, we've decided to proceed with other
-            candidates whose qualifications more closely match our current requirements.
+<p>We have received a significant number of applications for this role. After a thorough review of all candidates, including an initial assessment by our AI-powered screening system, we regret to inform you that we will not be moving forward with your application at this time. While your qualifications are commendable, other candidates were deemed to more closely match the specific requirements for this particular position.</p>
 
-            We encourage you to apply for future openings that align with your skills.
+<p>This decision does not reflect on your overall capabilities, and we encourage you to visit our careers page regularly for future opportunities that may align with your skills and experience.</p>
 
-            Best regards,
-            {company_name} Recruitment Team
-            """
+<p>We wish you the best in your job search.</p>
+
+<p>Sincerely,</p>
+<p>The {company_name} Recruitment Team</p>
+"""
         }
 
     def send_email(self, recipient_email, template_name, params):
         template = self.templates.get(template_name)
         if not template:
             raise ValueError(f"Template '{template_name}' not found")
-
-        lines = template.strip().split('\n')
-        subject_line = lines[1].replace('Subject: ', '').strip().format(**params)
-        body = '\n'.join(lines[3:]).format(**params)
+        
+        # Extract subject and body from the template
+        # Assumes "Subject: " is the first line of the template content
+        try:
+            subject_line_raw, html_body_raw = template.split('\n\n', 1)
+            subject_line = subject_line_raw.replace('Subject: ', '').strip().format(**params)
+            html_body = html_body_raw.format(**params)
+        except ValueError:
+            app.logger.error(f"Email template '{template_name}' is not formatted correctly (missing Subject or body).")
+            return False
 
         message = MIMEMultipart()
         message["From"] = self.sender_email
         message["To"] = recipient_email
         message["Subject"] = subject_line
-        message.attach(MIMEText(body, "plain"))
+        message.attach(MIMEText(html_body, "html")) # Send as HTML
         try:
             with smtplib.SMTP(self.smtp_server, self.smtp_port) as server:
                 server.starttls()
                 server.login(self.sender_email, self.sender_password)
                 server.send_message(message)
-            print(f"Email successfully handed off to SMTP server for: {recipient_email}, Subject: {subject_line}")
+            app.logger.info(f"Email successfully handed off to SMTP server for: {recipient_email}, Subject: {subject_line}")
             return True
         except smtplib.SMTPException as e:
-            print(f"SMTP error sending email to {recipient_email}: {str(e)}")
+            app.logger.error(f"SMTP error sending email to {recipient_email}: {str(e)}")
             return False
         except Exception as e: # Catch any other unexpected errors during sending
-            print(f"Unexpected error sending email to {recipient_email}: {str(e)}")
+            app.logger.error(f"Unexpected error sending email to {recipient_email}: {str(e)}")
             return False
 
     def notify_candidate(self, candidate_info, job_info, match_details, threshold=0.8):
@@ -537,17 +614,18 @@ class JobScreeningSystem:
         if smtp_config and all(smtp_config.values()): # Ensure all SMTP config values are present
             try:
                 self.notification_system = NotificationSystem(**smtp_config)
-                print("NotificationSystem initialized.")
+                app.logger.info("NotificationSystem initialized.")
             except Exception as e:
-                print(f"Failed to initialize NotificationSystem: {e}")
+                app.logger.error(f"Failed to initialize NotificationSystem: {e}")
                 self.notification_system = None
         else:
             self.notification_system = None
-            print("NotificationSystem not configured due to missing SMTP details.")
+            app.logger.warning("NotificationSystem not configured due to missing SMTP details.")
 
         self.job_requirements = None
         self.candidates = []
         self.match_results = []
+        self.last_screening_time = None
         
     def load_job_description(self, file_path):
         """Load and parse job description"""
@@ -565,7 +643,7 @@ class JobScreeningSystem:
         self.candidates = []
         
         if not os.path.exists(directory_path):
-            print(f"Directory {directory_path} does not exist")
+            app.logger.error(f"Resume directory {directory_path} does not exist")
             return []
 
         for filename in os.listdir(directory_path):
@@ -575,9 +653,9 @@ class JobScreeningSystem:
                     resume_data = self.resume_parser.parse_resume(file_path)
                     resume_data["file_name"] = filename
                     self.candidates.append(resume_data)
-                    print(f"Successfully parsed: {filename}")
+                    app.logger.info(f"Successfully parsed resume: {filename}")
                 except Exception as e:
-                    print(f"Error parsing resume {filename}: {e}")
+                    app.logger.error(f"Error parsing resume {filename}: {e}")
 
         return self.candidates
 
@@ -611,51 +689,125 @@ class JobScreeningSystem:
 
         self.match_results.sort(key=lambda x: x["match_score"], reverse=True)
 
-        return self.match_results
+        # --- Automated notification for shortlisted candidates ---
+        if self.notification_system:
+            app.logger.info("Attempting automated notifications for shortlisted candidates...")
+            job_info = {
+                "title": self.job_requirements.get("title", "the relevant position"),
+                "company": "Our Company" # Or make this configurable
+            }
+            notification_log_automated = []
+            for result in self.match_results:
+                if result.get("shortlisted"):
+                    candidate_data = next((c for c in self.candidates if c.get("file_name") == result.get("file_name")), None)
+                    if candidate_data and candidate_data.get("contact_info", {}).get("email"):
+                        try:
+                            # The threshold used here is the same one used for shortlisting.
+                            # notify_candidate will correctly pick the "shortlisted" template.
+                            success = self.notification_system.notify_candidate(candidate_data, job_info, result["details"], threshold)
+                            status = "Sent (Automated - Shortlisted)" if success else "Failed (SMTP - Automated Shortlisted)"
+                            notification_log_automated.append({
+                                "candidate": result["candidate"], 
+                                "email": candidate_data["contact_info"]["email"],
+                                "status": status,
+                                "shortlisted": True
+                            })
+                        except Exception as e_notify:
+                            app.logger.error(f"Automated notification failed for {result['candidate']}: {str(e_notify)}")
+                            notification_log_automated.append({"candidate": result["candidate"], "email": candidate_data["contact_info"]["email"], "status": f"Error: {str(e_notify)}", "shortlisted": True})
+                    else:
+                        notification_log_automated.append({"candidate": result["candidate"], "email": "N/A", "status": "Skipped (Automated - no email for shortlisted)", "shortlisted": True})
+            app.logger.info(f"Automated Notification Log: {notification_log_automated}")
+        # --- End automated notification ---
+        
+        automated_notifications_summary = {
+            "attempted": len(notification_log_automated),
+            "successful": len([log for log in notification_log_automated if "Sent" in log.get("status", "")]),
+            "failed": len([log for log in notification_log_automated if "Failed" in log.get("status", "") or "Error" in log.get("status", "")])
+        }
 
-    def send_notifications(self, company_name=None, threshold=0.8):
-        """Send notifications to all candidates"""
+        self.last_screening_time = datetime.now().isoformat()
+        return self.match_results, automated_notifications_summary
+    
+    def send_notifications(self, company_name=None, threshold=0.8, only_shortlisted=False):
+        """
+        Send notifications to candidates.
+        If only_shortlisted is True, only sends to shortlisted candidates.
+        Otherwise, sends to all (shortlisted get "shortlisted" email, others get "rejected").
+        """
         if not self.notification_system:
+            app.logger.warning("Notification system not configured. Cannot send emails.")
             raise ValueError("Notification system not configured. Please check SMTP settings.")
 
         if not self.match_results:
+            app.logger.warning("No screening results available to send notifications.")
             raise ValueError("No screening results available to send notifications.")
 
         job_info = {
             "title": self.job_requirements.get("title", "the relevant position"),
-            "company": company_name or "Our Company"
+            "company": company_name or "Our Company" # Default company name
         }
 
-        notification_log = []
+        manual_notification_log = []
         for result in self.match_results:
-            candidate_data = next((c for c in self.candidates if c.get("file_name") == result.get("file_name")), None)
-            if not candidate_data or not candidate_data.get("contact_info", {}).get("email"):
-                notification_log.append({
-                    "candidate": result.get("candidate", "Unknown"), "email": "N/A",
-                    "status": "Skipped (no email)", "shortlisted": bool(result.get("shortlisted", False))
+            if only_shortlisted and not result.get("shortlisted"):
+                manual_notification_log.append({
+                    "candidate": result.get("candidate", "Unknown"),
+                    "email": result.get("email", "N/A"),
+                    "status": "Skipped (not shortlisted for this manual notification run)",
+                    "shortlisted": False
                 })
                 continue
-            try:
-                # notify_candidate now returns True on success, False on failure during SMTP operations
-                success = self.notification_system.notify_candidate(candidate_data, job_info, result["details"], threshold)
-                if success:
-                    notification_log.append({
-                        "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
-                        "status": "Sent", "shortlisted": bool(result.get("shortlisted", False))
-                    })
-                else:
-                    notification_log.append({
-                        "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
-                        "status": "Failed (SMTP issue, check server logs for details)", # More specific status
-                        "shortlisted": bool(result.get("shortlisted", False))
-                    })
-            except Exception as e:
-                notification_log.append({
-                    "candidate": result["candidate"], "email": candidate_data["contact_info"]["email"],
-                    "status": f"Failed: {str(e)}", "shortlisted": bool(result.get("shortlisted", False))
+
+            candidate_data = next((c for c in self.candidates if c.get("file_name") == result.get("file_name")), None)
+            
+            if not candidate_data or not candidate_data.get("contact_info", {}).get("email"):
+                manual_notification_log.append({
+                    "candidate": result.get("candidate", "Unknown"), 
+                    "email": result.get("email", "N/A"),
+                    "status": f"Skipped (no email for candidate)", 
+                    "shortlisted": bool(result.get("shortlisted", False))
                 })
-        print(f"Notification log: {notification_log}") # Added print for easier debugging of the log
-        return notification_log
+                continue
+            
+            try:
+                # notify_candidate uses the threshold to determine template (shortlisted/rejected)
+                # The `result.get("shortlisted")` status is based on the screening_threshold.
+                # The `threshold` param here is for the notification system's decision logic.
+                email_sent_successfully = self.notification_system.notify_candidate(
+                    candidate_data, 
+                    job_info, 
+                    result["details"], 
+                    threshold # This threshold determines which template (shortlisted/rejected) is used by notify_candidate
+                )
+                
+                # Determine status message based on whether the candidate was shortlisted by screening
+                # and if the email was successfully sent.
+                if result.get("shortlisted"):
+                    email_status_message = "Sent (Shortlisted Template)"
+                else: # Candidate was not shortlisted by screening, so rejection template was used
+                    email_status_message = "Sent (Rejection Template)"
+
+                if not email_sent_successfully:
+                    email_status_message = "Failed (SMTP issue, check server logs)"
+
+                manual_notification_log.append({
+                    "candidate": result["candidate"], 
+                    "email": candidate_data["contact_info"]["email"],
+                    "status": email_status_message, 
+                    "shortlisted": bool(result.get("shortlisted", False)) # Reflects screening shortlist status
+                })
+            except Exception as e_manual_notify:
+                app.logger.error(f"Manual notification failed for {result['candidate']}: {str(e_manual_notify)}")
+                manual_notification_log.append({
+                    "candidate": result["candidate"], 
+                    "email": candidate_data["contact_info"]["email"],
+                    "status": f"Error: {str(e_manual_notify)}", 
+                    "shortlisted": bool(result.get("shortlisted", False))
+                })
+        
+        app.logger.info(f"Manual Notification Log: {manual_notification_log}")
+        return manual_notification_log
 
 
 # Flask Application
@@ -682,10 +834,10 @@ def allowed_file(filename):
 # Placeholder SMTP configuration - REPLACE with your actual details or load from environment/config
 # Ensure your SMTP server allows less secure app access or use an app password if using Gmail
 SMTP_CONFIG = {
-    "smtp_server": os.environ.get("SMTP_SERVER"),
-    "smtp_port": int(os.environ.get("SMTP_PORT", "0")), # Default to "0" to make int() safe and ensure all() check works
-    "sender_email": os.environ.get("SENDER_EMAIL"),
-    "sender_password": os.environ.get("SENDER_PASSWORD")
+    "smtp_server": os.environ.get("SMTP_SERVER", "smtp.gmail.com"), # e.g., "smtp.gmail.com"
+    "smtp_port": int(os.environ.get("SMTP_PORT", 587)), # e.g., 587 for TLS
+    "sender_email": os.environ.get("SENDER_EMAIL", "omkarproject7@gmail.com"), # e.g., "your.email@gmail.com"
+    "sender_password": os.environ.get("SENDER_PASSWORD", "tjxraiwtfugurliu") # e.g., "your_app_password"
 }
 
 screening_system = JobScreeningSystem(smtp_config=SMTP_CONFIG)
@@ -796,7 +948,7 @@ def screen_candidates():
             return jsonify({'error': 'No candidates loaded. Please upload resumes first.'}), 400
         
         # Perform screening
-        results = screening_system.screen_candidates(threshold, weights)
+        results, automated_notifications_summary = screening_system.screen_candidates(threshold, weights)
         
         # Convert results to JSON-serializable format
         serializable_results = []
@@ -817,18 +969,29 @@ def screen_candidates():
             }
             serializable_results.append(serializable_result)
         
+        # Clean job title for display (remove timestamp, extension, underscores, capitalize words)
+        raw_title = screening_system.job_requirements.get('title', 'Job Title')
+        clean_title = raw_title
+        # Remove timestamp if present (e.g., 20230613_183053_Software_Developer)
+        clean_title = re.sub(r'^\d{8}_\d{6}_', '', clean_title)
+        # Remove extension if present
+        clean_title = re.sub(r'\.[a-zA-Z0-9]+$', '', clean_title)
+        # Replace underscores with spaces and capitalize words
+        clean_title = ' '.join(word.capitalize() for word in clean_title.replace('_', ' ').split())
+        
         response = {
             'message': 'Screening completed successfully',
             'total_candidates': int(len(serializable_results)),
             'shortlisted_candidates': int(len([r for r in serializable_results if r.get('shortlisted', False)])),
             'threshold': float(threshold),
-            'results': serializable_results
+            'results': serializable_results,
+            'automated_notifications_summary': automated_notifications_summary,
+            'job_title': clean_title
         }
         
         return jsonify(response)
     
     except Exception as e:
-        import traceback
         traceback.print_exc()  # This will help debug the exact error
         return jsonify({'error': f'Error during screening: {str(e)}'}), 500
 
@@ -864,7 +1027,6 @@ def get_results():
         })
     
     except Exception as e:
-        import traceback
         traceback.print_exc()
         return jsonify({'error': f'Error retrieving results: {str(e)}'}), 500
 
@@ -874,7 +1036,7 @@ def send_notifications():
         data = request.get_json() or {}
         company_name = data.get('company_name', 'Our Company')
         threshold = float(data.get('threshold', 0.8)) # Get threshold from request or use default
-
+        only_shortlisted_param = data.get('only_shortlisted', False) # New parameter
         if not screening_system.notification_system:
             return jsonify({'error': 'Notification system not configured. Cannot send emails.'}), 400
 
@@ -883,7 +1045,11 @@ def send_notifications():
 
         # Call the actual send_notifications method
         # The method now returns a log of notification attempts
-        notification_log = screening_system.send_notifications(company_name=company_name, threshold=threshold)
+        notification_log = screening_system.send_notifications(
+            company_name=company_name, 
+            threshold=threshold,
+            only_shortlisted=bool(only_shortlisted_param)
+        )
 
         return jsonify({
             'message': 'Notification process completed. Check log for details.',
@@ -903,15 +1069,27 @@ def download_results():
         # Ensure the base upload folder exists for writing the PDF
         base_results_dir = app.config['UPLOAD_FOLDER']
         os.makedirs(base_results_dir, exist_ok=True)
-        pdf_filename = 'screening_results.pdf'
-        pdf_file_path = os.path.join(base_results_dir, pdf_filename)
 
+        job_title_raw = screening_system.job_requirements.get('title', 'Screening')
+        # Basic sanitization for filename
+        job_title_safe = "".join(c if c.isalnum() or c in [' ', '_', '-'] else '' for c in job_title_raw).strip().replace(' ', '_')
+        if not job_title_safe: job_title_safe = "Screening_Results" # Fallback
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        dynamic_pdf_filename = f"{job_title_safe}_results_{timestamp}.pdf"
+        pdf_file_path = os.path.join(base_results_dir, dynamic_pdf_filename)
+        
         # Create styles
         styles = getSampleStyleSheet()
         title_style = styles['h1']
         title_style.alignment = 1 # Center alignment for title
         heading_style = styles['h2']
         heading_style.alignment = 1 # Center alignment for job title heading
+
+        header_style = ParagraphStyle(
+            'HeaderStyle', parent=styles['Normal'], fontName='Helvetica-Bold', 
+            fontSize=9, leading=11, alignment=1 # Center alignment for headers
+        )
 
         # Base font for the document
         base_font_name = 'Helvetica'
@@ -949,8 +1127,12 @@ def download_results():
 
         # Table data
         table_data = [
-            [Paragraph("Candidate", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Email", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("File Name", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Match Score (%)", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Shortlisted?", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), 
-             Paragraph("Skill Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Exp. Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Edu. Score", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1)), Paragraph("Matched Skills", ParagraphStyle('Header', parent=normal_style, fontName=base_bold_font_name, alignment=1))]
+            [Paragraph("Candidate", header_style), Paragraph("Email", header_style), 
+             Paragraph("File Name", header_style), Paragraph("Match Score (%)", header_style), 
+             Paragraph("Shortlisted?", header_style), Paragraph("Skill Score", header_style), 
+             Paragraph("Exp. Score", header_style), Paragraph("Edu. Score", header_style), 
+             Paragraph("Matched Skills", header_style)
+            ]
         ]
 
         for result in screening_system.match_results:
@@ -1021,14 +1203,60 @@ def download_results():
         story.append(results_table)
         
         doc.build(story)
-        
-        return send_from_directory(directory=base_results_dir, path=pdf_filename, as_attachment=True, download_name='screening_results.pdf')
+
+        return send_from_directory(directory=base_results_dir, path=dynamic_pdf_filename, as_attachment=True, download_name=dynamic_pdf_filename)
 
     except Exception as e:
         traceback.print_exc()
         # flash(f'Error generating PDF: {str(e)}', 'danger')
         # return redirect(url_for('index'))
         return jsonify({'error': f'Error generating PDF report: {str(e)}'}), 500
+
+@app.route('/download_results_csv')
+def download_results_csv():
+    try:
+        if not screening_system.match_results:
+            return jsonify({'error': 'No results available to download as CSV.'}), 400
+
+        job_title_raw = screening_system.job_requirements.get('title', 'Screening')
+        job_title_safe = "".join(c if c.isalnum() or c in [' ', '_', '-'] else '' for c in job_title_raw).strip().replace(' ', '_')
+        if not job_title_safe: job_title_safe = "Screening_Results"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_filename = f"{job_title_safe}_results_{timestamp}.csv"
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        header = ["Candidate", "Email", "File Name", "Match Score (%)", "Shortlisted?", 
+                  "Skill Score (%)", "Experience Score (%)", "Education Score (%)", "Matched Skills"]
+        writer.writerow(header)
+
+        for result in screening_system.match_results:
+            details = result.get('details', {})
+            row = [
+                str(result.get('candidate', 'Unknown')),
+                str(result.get('email', 'N/A')),
+                str(result.get('file_name', 'N/A')),
+                f"{float(result.get('match_score', 0.0) * 100):.1f}",
+                "Yes" if bool(result.get('shortlisted', False)) else "No",
+                f"{float(details.get('skill_score', 0.0) * 100):.1f}",
+                f"{float(details.get('experience_score', 0.0) * 100):.1f}",
+                f"{float(details.get('education_score', 0.0) * 100):.1f}",
+                ', '.join(map(str, details.get('matched_skills', [])))
+            ]
+            writer.writerow(row)
+
+        output.seek(0)
+        
+        return Response(
+            output,
+            mimetype="text/csv",
+            headers={"Content-Disposition": f"attachment;filename={csv_filename}"}
+        )
+
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({'error': f'Error generating CSV report: {str(e)}'}), 500
 
 @app.route('/reset_system', methods=['POST'])
 def reset_system():
@@ -1047,12 +1275,9 @@ def reset_system():
                         if os.path.isfile(item_path) or os.path.islink(item_path):
                             os.unlink(item_path)
                         # If you expect subdirectories inside job_descriptions/resumes, add shutil.rmtree
-                    except Exception as e_remove:
-                        print(f"Error removing {item_path}: {e_remove}")
-        
-        pdf_path = os.path.join(app.config['UPLOAD_FOLDER'], 'screening_results.pdf')
-        if os.path.exists(pdf_path) and os.path.isfile(pdf_path):
-            os.unlink(pdf_path)
+                    except Exception as e_remove: # pragma: no cover
+                        app.logger.warning(f"Error removing {item_path} during reset: {e_remove}")
+        # Note: Dynamically named PDFs in app.config['UPLOAD_FOLDER'] are not specifically deleted here.
             
         return jsonify({'message': 'System reset successfully (ephemeral data in /tmp cleared)'})
     except Exception as e:
@@ -1065,8 +1290,8 @@ def get_status():
             'job_description_loaded': screening_system.job_requirements is not None,
             'candidates_loaded': len(screening_system.candidates),
             'screening_completed': len(screening_system.match_results) > 0,
-            'job_requirements': screening_system.job_requirements,
-            'last_screening_time': datetime.now().isoformat() # This might be better set when screening actually happens
+            'job_requirements': screening_system.job_requirements, # Could be large, consider summarizing
+            'last_screening_time': screening_system.last_screening_time 
         }
         
         return jsonify(status)
