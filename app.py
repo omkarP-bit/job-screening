@@ -7,8 +7,8 @@ from datetime import datetime
 
 # Import the complete JobScreeningSystem and related classes
 import re
-import numpy as np
-import pandas as pd
+# import numpy as np
+# import pandas as pd
 import spacy
 import PyPDF2
 import docx
